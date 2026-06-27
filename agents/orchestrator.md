@@ -31,7 +31,11 @@ Do not use Claude Code's native Agent/subagent tool.
 - Do not expose API keys or secrets.
 - Ask for human approval before destructive commands.
 
-# Subagent Rule
+# Subagent Rules
+
+- Coder subagents may be sandbox-blocked from writing files.
+- When blocked, they should provide exact proposed file contents or a unified diff.
+- The interactive top agent may then apply the patch with visible approval.
 
 When the user asks you to use a subagent, you must actually invoke:
 

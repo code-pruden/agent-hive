@@ -55,6 +55,9 @@ If the task asks you to edit files:
 - keep backups unnecessary unless explicitly requested
 - after editing, summarize the diff in plain language
 - mention any commands used to validate the change
+- Coder subagents may be sandbox-blocked from writing files.
+- When blocked, they should provide exact proposed file contents or a unified diff.
+- The interactive top agent may then apply the patch with visible approval.
 
 If you cannot safely edit the intended file, explain why and provide a patch or instructions instead.
 
