@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CLAUDE_CMD="${CLAUDE_CMD:-claude}"
+WRAPPER="${WRAPPER:-$HOME/agent-hive/bin/with_deepseek_env}"
+SECONDS_LIMIT="${SECONDS_LIMIT:-45}"
+
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+
+PROMPT_FILE="$TMPDIR/prompt.md"
+
+cat > "$PROMPT_FILE" <<'EOF'
+Reply with exactly one short sentence saying which model/runtime received this prompt.
+Do not use markdown.
+EOF
+
+run_test() {
+  local name="$1"
+  shift
+
+  echo
+  echo "============================================================"
+  echo "TEST: $name"
+  echo "COMMAND:"
+  printf '  %q ' "$@"
+  echo
+  echo "============================================================"
+
+  set +e
+  timeout --kill-after=5s "${SECONDS_LIMIT}s" "$@" > "$TMPDIR/${name}.stdout" 2> "$TMPDIR/${name}.stderr"
+  status=$?
+  set -e
+
+  echo "exit status: $status"
+  echo "--- stdout ---"
+  cat "$TMPDIR/${name}.stdout" || true
+  echo
+  echo "--- stderr ---"
+  cat "$TMPDIR/${name}.stderr" || true
+  echo
+
+  if [[ "$status" -eq 0 ]]; then
+    echo "RESULT: PASS"
+  elif [[ "$status" -eq 124 ]]; then
+    echo "RESULT: TIMEOUT"
+  else
+    echo "RESULT: FAIL"
+  fi
+}
+
+echo "Testing Claude command: $CLAUDE_CMD"
+echo "Using wrapper:          $WRAPPER"
+echo "Timeout:                ${SECONDS_LIMIT}s"
+
+if ! command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
+  echo "Cannot find $CLAUDE_CMD in PATH." >&2
+  exit 1
+fi
+
+if [[ ! -x "$WRAPPER" ]]; then
+  echo "Wrapper is not executable: $WRAPPER" >&2
+  exit 1
+fi
+
+run_test "help" \
+  "$WRAPPER" "$CLAUDE_CMD" --help
+
+run_test "stdin_plain" \
+  "$WRAPPER" "$CLAUDE_CMD" < "$PROMPT_FILE"
+
+run_test "print_short_p_arg" \
+  "$WRAPPER" "$CLAUDE_CMD" -p "$(cat "$PROMPT_FILE")"
+
+run_test "print_long_arg" \
+  "$WRAPPER" "$CLAUDE_CMD" --print "$(cat "$PROMPT_FILE")"
+
+run_test "print_stdin" \
+  "$WRAPPER" "$CLAUDE_CMD" --print < "$PROMPT_FILE"
+
+run_test "print_short_p_stdin" \
+  "$WRAPPER" "$CLAUDE_CMD" -p < "$PROMPT_FILE"

@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# local_ai
+#
+# Small local GGUF utility wrapper for agent-hive.
+#
+# Uses deterministic shell rules for routing because a 230M model tends to copy
+# examples. Uses the local GGUF model for clerical text tasks like tagging and
+# short summaries.
+#
+# Usage:
+#   local_ai classify_task "Review spawn_agent for obvious breakage."
+#   local_ai tag_result /path/to/result.md
+#   local_ai summarize_short /path/to/file.md
+#
+# Optional env vars:
+#   LOCAL_AI_MODEL=/srv/models/gguf/LFM2.5-230M-Q8_0.gguf
+#   LLAMA_CMD=llama-cli-cuda
+#   LOCAL_AI_N=160
+#   LOCAL_AI_CTX=4096
+#   LOCAL_AI_GPU_LAYERS=99
+
+MODEL="${LOCAL_AI_MODEL:-/srv/models/gguf/LFM2.5-230M-Q8_0.gguf}"
+LLAMA_CMD="${LLAMA_CMD:-llama-cli-cuda}"
+LOCAL_AI_N="${LOCAL_AI_N:-160}"
+LOCAL_AI_CTX="${LOCAL_AI_CTX:-4096}"
+LOCAL_AI_GPU_LAYERS="${LOCAL_AI_GPU_LAYERS:-99}"
+
+MODE="${1:-}"
+shift || true
+
+usage() {
+  echo "Usage: $0 <classify_task|tag_result|summarize_short> <input>" >&2
+}
+
+json_escape() {
+  python3 -c 'import json,sys; print(json.dumps(sys.stdin.read())[1:-1])'
+}
+
+validate_number() {
+  local name="$1"
+  local value="$2"
+
+  if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+    echo "Invalid $name: $value" >&2
+    exit 2
+  fi
+}
+
+run_model() {
+  local prompt="$1"
+  local output
+
+  output="$(
+    "$LLAMA_CMD" \
+      -m "$MODEL" \
+      -c "$LOCAL_AI_CTX" \
+      -ngl "$LOCAL_AI_GPU_LAYERS" \
+      -n "$LOCAL_AI_N" \
+      --temp 0 \
+      --no-display-prompt \
+      --prompt "$prompt"
+  )"
+
+  # Strip llama.cpp perf lines like:
+  # [ Prompt: 3988.0 t/s | Generation: 158.8 t/s ]
+  printf '%s\n' "$output" | sed '/^\[ Prompt:/d'
+}
+
+require_llama() {
+  if ! command -v "$LLAMA_CMD" >/dev/null 2>&1; then
+    echo "Cannot find llama.cpp command: $LLAMA_CMD" >&2
+    echo "Set LLAMA_CMD=/path/to/llama-cli or LLAMA_CMD=llama-cli-cuda if needed." >&2
+    exit 3
+  fi
+
+  if [[ ! -f "$MODEL" ]]; then
+    echo "Missing model: $MODEL" >&2
+    exit 4
+  fi
+
+  validate_number LOCAL_AI_N "$LOCAL_AI_N"
+  validate_number LOCAL_AI_CTX "$LOCAL_AI_CTX"
+  validate_number LOCAL_AI_GPU_LAYERS "$LOCAL_AI_GPU_LAYERS"
+}
+
+classify_task() {
+  local task="$*"
+
+  if [[ -z "$task" ]]; then
+    echo "Usage: $0 classify_task <task text>" >&2
+    exit 2
+  fi
+
+  local task_lc
+  task_lc="$(printf '%s' "$task" | tr '[:upper:]' '[:lower:]')"
+
+  local route="none"
+  local confidence="0.50"
+  local reason="No strong routing rule matched."
+
+  if [[ "$task_lc" =~ summarize|summary|compress|extract[[:space:]]+key|key[[:space:]]+points|recap ]]; then
+    route="summarizer"
+    confidence="0.92"
+    reason="Task asks to summarize or compress existing text."
+  elif [[ "$task_lc" =~ edit|modify|patch|implement|write[[:space:]]+code|change[[:space:]]+file|add[[:space:]]+comment|fix ]]; then
+    route="coder"
+    confidence="0.90"
+    reason="Task asks to edit, implement, patch, or change files."
+  elif [[ "$task_lc" =~ deep[[:space:]]+review|security[[:space:]]+review|architecture[[:space:]]+review|correctness[[:space:]]+review|audit ]]; then
+    route="reviewer"
+    confidence="0.88"
+    reason="Task asks for a deeper review or audit."
+  elif [[ "$task_lc" =~ review|sanity|obvious[[:space:]]+breakage|quick[[:space:]]+check|check[[:space:]]+for[[:space:]]+breakage ]]; then
+    route="fast_reviewer"
+    confidence="0.86"
+    reason="Task asks for a quick or focused review."
+  fi
+
+  local reason_json
+  reason_json="$(printf '%s' "$reason" | json_escape)"
+
+  printf '{"route":"%s","route_confidence":%s,"routing_reason":"%s"}\n' \
+    "$route" "$confidence" "$reason_json"
+}
+
+tag_result() {
+  local file="${1:-}"
+
+  if [[ -z "$file" || ! -f "$file" ]]; then
+    echo "Usage: $0 tag_result <result.md>" >&2
+    exit 2
+  fi
+
+  require_llama
+
+  local content
+  content="$(sed -n '1,220p' "$file")"
+
+  run_model "You are only a result tagger.
+
+Extract the final status from this agent result.
+Do not re-review the work.
+Do not add new conclusions.
+Only tag what the text says.
+
+Allowed task_result values:
+APPROVE
+APPROVE_WITH_CHANGES
+DO_NOT_APPROVE
+IMPLEMENTED
+PARTIAL
+PROPOSED_ONLY
+BLOCKED
+SUMMARIZED
+UNKNOWN
+
+Return exactly one compact JSON object.
+No markdown.
+No explanation outside JSON.
+
+Required JSON shape:
+{\"task_result\":\"APPROVE_WITH_CHANGES\",\"blocked\":false,\"summary\":\"One sentence summary of the result.\"}
+
+Text:
+$content"
+}
+
+summarize_short() {
+  local file="${1:-}"
+
+  if [[ -z "$file" || ! -f "$file" ]]; then
+    echo "Usage: $0 summarize_short <file>" >&2
+    exit 2
+  fi
+
+  require_llama
+
+  local content
+  content="$(sed -n '1,160p' "$file")"
+
+  run_model "You are only a short summarizer.
+
+Summarize the provided text in exactly 3 concise bullet points.
+Do not add facts.
+Do not review or judge the work unless the text itself gives a judgment.
+
+Text:
+$content
+
+Return exactly 3 bullets:"
+}
+
+if [[ -z "$MODE" ]]; then
+  usage
+  exit 2
+fi
+
+case "$MODE" in
+  classify_task)
+    classify_task "$@"
+    ;;
+
+  tag_result)
+    tag_result "$@"
+    ;;
+
+  summarize_short)
+    summarize_short "$@"
+    ;;
+
+  *)
+    echo "Unknown mode: $MODE" >&2
+    usage
+    exit 2
+    ;;
+esac

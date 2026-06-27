@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENT_HIVE_HOME="${AGENT_HIVE_HOME:-$HOME/agent-hive}"
+CLAUDE_CMD="${CLAUDE_CMD:-claude}"
+ENV_WRAPPER="${ENV_WRAPPER:-$AGENT_HIVE_HOME/bin/with_deepseek_env}"
+
+if [[ ! -x "$ENV_WRAPPER" ]]; then
+  echo "Missing or non-executable env wrapper: $ENV_WRAPPER" >&2
+  exit 1
+fi
+
+exec "$ENV_WRAPPER" "$CLAUDE_CMD" "$@"

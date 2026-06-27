@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ENV_FILE="${AGENT_HIVE_ENV_FILE:-$HOME/.config/agent-hive/deepseek.env}"
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "Missing env file: $ENV_FILE" >&2
+  exit 1
+fi
+
+PERMS="$(stat -c '%a' "$ENV_FILE")"
+if [[ "$PERMS" != "600" ]]; then
+  echo "Refusing to load $ENV_FILE because permissions are $PERMS, expected 600." >&2
+  echo "Fix with: chmod 600 $ENV_FILE" >&2
+  exit 1
+fi
+
+# Load variables without printing them.
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+
+exec "$@"

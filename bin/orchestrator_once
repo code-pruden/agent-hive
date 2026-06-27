@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENT_HIVE_HOME="${AGENT_HIVE_HOME:-$HOME/agent-hive}"
+PROMPT_FILE="$AGENT_HIVE_HOME/agents/orchestrator.md"
+
+if [[ ! -f "$PROMPT_FILE" ]]; then
+  echo "Missing orchestrator prompt: $PROMPT_FILE" >&2
+  exit 1
+fi
+
+USER_TASK="${*:-}"
+
+if [[ -z "$USER_TASK" ]]; then
+  echo "Usage: $0 <task>" >&2
+  exit 2
+fi
+
+{
+  cat "$PROMPT_FILE"
+  echo
+  echo "# Execution Requirement"
+  echo
+  echo "If this task asks you to use a subagent, you must actually run /home/gregory/agent-hive/bin/spawn_agent."
+  echo "If you cannot run it because approval or permissions are missing, output SUBAGENT_NOT_RUN and stop."
+  echo "Do not do the subagent's job yourself as a substitute."
+  echo
+  echo "# User Task"
+  echo
+  echo "$USER_TASK"
+} | "$AGENT_HIVE_HOME/bin/agent_top" --print

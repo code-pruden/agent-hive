@@ -1,0 +1,350 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# spawn_agent
+#
+# Spawn a Claude Code agent subprocess with role, task, heartbeat, and timeout.
+#
+# Usage:
+#   ~/agent-hive/bin/spawn_agent reviewer "Review this design for failure modes"
+#   ~/agent-hive/bin/spawn_agent coder "Implement the task runner"
+#
+# Required:
+#   ~/agent-hive/bin/with_deepseek_env
+#   ~/agent-hive/agents/<role>.md
+#
+# Optional env vars:
+#   AGENT_HEARTBEAT_SECONDS=15
+#   AGENT_HIVE_HOME=$HOME/agent-hive
+#   CLAUDE_CMD=claude
+#   ENV_WRAPPER=$AGENT_HIVE_HOME/bin/with_deepseek_env
+#   AGENT_PARENT_TASK=root
+#   AGENT_DEPTH=0
+#   AGENT_MAX_DEPTH=2
+#   AGENT_MAX_SECONDS=900
+
+AGENT_HIVE_HOME="${AGENT_HIVE_HOME:-$HOME/agent-hive}"
+CLAUDE_CMD="${CLAUDE_CMD:-claude}"
+ENV_WRAPPER="${ENV_WRAPPER:-$AGENT_HIVE_HOME/bin/with_deepseek_env}"
+
+ROLE="${1:-}"
+TASK="${2:-}"
+
+if [[ -z "$ROLE" || -z "$TASK" ]]; then
+  echo "Usage: $0 <role> <task>" >&2
+  exit 2
+fi
+if [[ "$TASK" == *$'\n'* ]]; then
+  echo "Error: task must be a single line." >&2
+  exit 2
+fi
+
+AGENT_PARENT_TASK="${AGENT_PARENT_TASK:-root}"
+AGENT_DEPTH="${AGENT_DEPTH:-0}"
+AGENT_MAX_DEPTH="${AGENT_MAX_DEPTH:-2}"
+AGENT_MAX_SECONDS="${AGENT_MAX_SECONDS:-900}"
+
+if ! [[ "$AGENT_DEPTH" =~ ^[0-9]+$ ]]; then
+  echo "Invalid AGENT_DEPTH: $AGENT_DEPTH" >&2
+  exit 2
+fi
+
+if ! [[ "$AGENT_MAX_DEPTH" =~ ^[0-9]+$ ]]; then
+  echo "Invalid AGENT_MAX_DEPTH: $AGENT_MAX_DEPTH" >&2
+  exit 2
+fi
+
+if ! [[ "$AGENT_MAX_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "Invalid AGENT_MAX_SECONDS: $AGENT_MAX_SECONDS" >&2
+  exit 2
+fi
+
+if (( AGENT_DEPTH >= AGENT_MAX_DEPTH )); then
+  echo "Refusing to spawn agent: max depth reached." >&2
+  echo "AGENT_DEPTH=$AGENT_DEPTH AGENT_MAX_DEPTH=$AGENT_MAX_DEPTH" >&2
+  exit 3
+fi
+
+SAFE_ROLE="$(echo "$ROLE" | tr -cd '[:alnum:]_-')"
+
+if [[ "$SAFE_ROLE" != "$ROLE" || -z "$SAFE_ROLE" ]]; then
+  echo "Invalid role name: $ROLE" >&2
+  echo "Allowed characters: letters, numbers, underscore, dash" >&2
+  exit 4
+fi
+
+ROLE_FILE="$AGENT_HIVE_HOME/agents/$ROLE.md"
+
+if [[ ! -f "$ROLE_FILE" ]]; then
+  echo "Unknown agent role: $ROLE" >&2
+  echo "Expected role file: $ROLE_FILE" >&2
+  exit 4
+fi
+
+if [[ ! -x "$ENV_WRAPPER" ]]; then
+  echo "Missing or non-executable env wrapper: $ENV_WRAPPER" >&2
+  echo "Expected something like: $AGENT_HIVE_HOME/bin/with_deepseek_env" >&2
+  exit 5
+fi
+
+if ! command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
+  echo "Cannot find Claude-compatible CLI command: $CLAUDE_CMD" >&2
+  echo "Set CLAUDE_CMD=/path/to/your/cli if needed." >&2
+  exit 6
+fi
+
+mkdir -p \
+  "$AGENT_HIVE_HOME/tasks" \
+  "$AGENT_HIVE_HOME/logs" \
+  "$AGENT_HIVE_HOME/workspaces"
+
+TIMESTAMP="$(date -u +"%Y%m%dT%H%M%SZ")"
+TASK_ID="${TIMESTAMP}-${SAFE_ROLE}-$$"
+
+TASK_DIR="$AGENT_HIVE_HOME/tasks/$TASK_ID"
+WORKSPACE_DIR="$AGENT_HIVE_HOME/workspaces/$TASK_ID"
+LOG_DIR="$AGENT_HIVE_HOME/logs/$TASK_ID"
+
+mkdir -p "$TASK_DIR" "$WORKSPACE_DIR" "$LOG_DIR"
+
+PROMPT_FILE="$TASK_DIR/prompt.md"
+RESULT_FILE="$TASK_DIR/result.md"
+META_FILE="$TASK_DIR/meta.env"
+STDOUT_FILE="$LOG_DIR/stdout.log"
+STDERR_FILE="$LOG_DIR/stderr.log"
+
+cat > "$META_FILE" <<EOF
+TASK_ID=$TASK_ID
+ROLE=$ROLE
+PARENT_TASK=$AGENT_PARENT_TASK
+DEPTH=$AGENT_DEPTH
+NEXT_DEPTH=$((AGENT_DEPTH + 1))
+CREATED_UTC=$TIMESTAMP
+WORKSPACE_DIR=$WORKSPACE_DIR
+PROMPT_FILE=$PROMPT_FILE
+RESULT_FILE=$RESULT_FILE
+STDOUT_FILE=$STDOUT_FILE
+STDERR_FILE=$STDERR_FILE
+EOF
+
+cat > "$PROMPT_FILE" <<EOF
+# Agent Role
+
+$(cat "$ROLE_FILE")
+
+# Task Envelope
+
+You are a spawned subagent in a controlled agent hierarchy.
+
+Parent task:
+$AGENT_PARENT_TASK
+
+Current role:
+$ROLE
+
+Current task:
+$TASK
+
+Task id:
+$TASK_ID
+
+Workspace:
+$WORKSPACE_DIR
+
+Depth:
+$AGENT_DEPTH
+
+Maximum allowed runtime:
+${AGENT_MAX_SECONDS} seconds
+
+# Operating Rules
+
+- Complete only the assigned task.
+- Do not spawn further agents unless the role instructions explicitly allow it.
+- Do not use Claude Code's native Agent/subagent tool. This wrapper is the only approved subagent mechanism.
+- Do not modify files outside the workspace unless explicitly instructed.
+- Do not run destructive commands.
+- Do not assume access to secrets unless they are explicitly provided by the environment.
+- Prefer concise, actionable output.
+- Record assumptions.
+- Report blockers clearly.
+- End with a section named "Result".
+
+# Output Format
+
+Follow the output format specified in your role instructions.
+
+If your role instructions do not specify an output format, use:
+
+## Summary
+
+## Work Performed
+
+## Findings
+
+## Risks or Blockers
+
+## Result
+EOF
+
+echo "Spawning agent:"
+echo "  task_id:   $TASK_ID"
+echo "  role:      $ROLE"
+echo "  parent:    $AGENT_PARENT_TASK"
+echo "  depth:     $AGENT_DEPTH -> $((AGENT_DEPTH + 1))"
+echo "  wrapper:   $ENV_WRAPPER"
+echo "  command:   $CLAUDE_CMD --print < prompt.md"
+echo "  workspace: $WORKSPACE_DIR"
+echo "  prompt:    $PROMPT_FILE"
+echo "  result:    $RESULT_FILE"
+echo
+
+export AGENT_HIVE_HOME
+export AGENT_PARENT_TASK="$TASK_ID"
+export AGENT_DEPTH="$((AGENT_DEPTH + 1))"
+
+echo "Agent running..."
+echo "  live stdout: $STDOUT_FILE"
+echo "  live stderr: $STDERR_FILE"
+echo
+
+HEARTBEAT_SECONDS="${AGENT_HEARTBEAT_SECONDS:-15}"
+
+if ! [[ "$HEARTBEAT_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "Invalid AGENT_HEARTBEAT_SECONDS: $HEARTBEAT_SECONDS" >&2
+  exit 2
+fi
+
+if (( HEARTBEAT_SECONDS < 1 )); then
+  echo "AGENT_HEARTBEAT_SECONDS must be >= 1" >&2
+  exit 2
+fi
+
+if (( HEARTBEAT_SECONDS > AGENT_MAX_SECONDS )); then
+  echo "Warning: AGENT_HEARTBEAT_SECONDS is greater than AGENT_MAX_SECONDS; heartbeat may not print before timeout." >&2
+fi
+
+set +e
+
+CHILD_RUNNING=0
+CLAUDE_PID=""
+HEARTBEAT_PID=""
+CLEANING_UP=0
+
+# Terminate heartbeat and child agent process group on exit, interrupt, or term.
+cleanup_child() {
+  if [[ "${CLEANING_UP:-0}" -eq 1 ]]; then
+    return
+  fi
+
+  CLEANING_UP=1
+
+  if [[ -n "${HEARTBEAT_PID:-}" ]] && kill -0 "$HEARTBEAT_PID" 2>/dev/null; then
+    kill -s TERM "$HEARTBEAT_PID" 2>/dev/null || true
+    sleep 1
+    kill -s KILL "$HEARTBEAT_PID" 2>/dev/null || true
+    wait "$HEARTBEAT_PID" 2>/dev/null || true
+  fi
+
+  if [[ "${CHILD_RUNNING:-0}" -eq 1 && -n "${CLAUDE_PID:-}" ]]; then
+    echo
+    echo "Stopping child agent process group..."
+    # setsid creates a new session where the timeout process is the process-group leader.
+    # Killing -$CLAUDE_PID signals the whole agent process group (timeout + claude).
+    kill -s TERM -- "-$CLAUDE_PID" 2>/dev/null || true
+    sleep 2
+    kill -s KILL -- "-$CLAUDE_PID" 2>/dev/null || true
+
+    wait "$CLAUDE_PID" 2>/dev/null || true
+    CHILD_RUNNING=0
+  fi
+}
+
+trap cleanup_child EXIT INT TERM
+
+# Run agent in its own process group via setsid so cleanup_child can kill the
+# entire group (timeout wrapper + claude) with a single kill -$CLAUDE_PID.
+setsid timeout --kill-after=30s "${AGENT_MAX_SECONDS}s" \
+  "$ENV_WRAPPER" \
+  "$CLAUDE_CMD" --print \
+  < "$PROMPT_FILE" \
+  > "$STDOUT_FILE" \
+  2> "$STDERR_FILE" &
+
+CLAUDE_PID=$!
+CHILD_RUNNING=1
+
+# Print periodic "still running" messages and tail stderr if it has output.
+heartbeat_loop() {
+  local elapsed=0
+
+  while true; do
+    sleep "$HEARTBEAT_SECONDS"
+    elapsed=$((elapsed + HEARTBEAT_SECONDS))
+
+    echo "Agent still running... ${elapsed}s elapsed"
+
+    if [[ -s "$STDERR_FILE" ]]; then
+      echo "  stderr has output; last lines:"
+      tail -n 3 "$STDERR_FILE" | sed 's/^/    /'
+    fi
+  done
+}
+
+heartbeat_loop &
+HEARTBEAT_PID=$!
+
+wait "$CLAUDE_PID"
+STATUS=$?
+CHILD_RUNNING=0
+
+if [[ -n "${HEARTBEAT_PID:-}" ]] && kill -0 "$HEARTBEAT_PID" 2>/dev/null; then
+  kill -s TERM "$HEARTBEAT_PID" 2>/dev/null || true
+  sleep 1
+  kill -s KILL "$HEARTBEAT_PID" 2>/dev/null || true
+  wait "$HEARTBEAT_PID" 2>/dev/null || true
+fi
+
+trap - EXIT INT TERM
+set -e
+
+if [[ "$STATUS" -eq 0 ]]; then
+  cp "$STDOUT_FILE" "$RESULT_FILE"
+
+  echo "Agent completed:"
+  echo "  task_id: $TASK_ID"
+  echo "  result:  $RESULT_FILE"
+  echo
+
+  cat "$RESULT_FILE"
+  exit 0
+fi
+
+{
+  echo "# Agent failed"
+  echo
+  echo "task_id: $TASK_ID"
+  echo "role: $ROLE"
+  echo "status: $STATUS"
+  echo
+  if [[ "$STATUS" -eq 124 ]]; then
+    echo "Reason: timeout after ${AGENT_MAX_SECONDS}s"
+    echo
+  fi
+  echo "## stdout"
+  echo
+  cat "$STDOUT_FILE" || true
+  echo
+  echo "## stderr"
+  echo
+  cat "$STDERR_FILE" || true
+} > "$RESULT_FILE"
+
+echo "Agent failed or timed out." >&2
+echo "  task_id: $TASK_ID" >&2
+echo "  role:    $ROLE" >&2
+echo "  status:  $STATUS" >&2
+echo "  result:  $RESULT_FILE" >&2
+echo "  stderr:  $STDERR_FILE" >&2
+
+exit "$STATUS"
