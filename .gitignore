@@ -3,3 +3,7 @@ tasks/
 workspaces/
 *.log
 .env
+
+.claude/
+
+.claude/

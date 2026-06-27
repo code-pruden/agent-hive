@@ -27,15 +27,17 @@ AGENT_HIVE_HOME="${AGENT_HIVE_HOME:-$HOME/agent-hive}"
 CLAUDE_CMD="${CLAUDE_CMD:-claude}"
 ENV_WRAPPER="${ENV_WRAPPER:-$AGENT_HIVE_HOME/bin/with_deepseek_env}"
 
+log() { echo "$@" >&2; }
+
 ROLE="${1:-}"
 TASK="${2:-}"
 
 if [[ -z "$ROLE" || -z "$TASK" ]]; then
-  echo "Usage: $0 <role> <task>" >&2
+  log "Usage: $0 <role> <task>" >&2
   exit 2
 fi
 if [[ "$TASK" == *$'\n'* ]]; then
-  echo "Error: task must be a single line." >&2
+  log "Error: task must be a single line." >&2
   exit 2
 fi
 
@@ -45,53 +47,60 @@ AGENT_MAX_DEPTH="${AGENT_MAX_DEPTH:-2}"
 AGENT_MAX_SECONDS="${AGENT_MAX_SECONDS:-900}"
 
 if ! [[ "$AGENT_DEPTH" =~ ^[0-9]+$ ]]; then
-  echo "Invalid AGENT_DEPTH: $AGENT_DEPTH" >&2
+  log "Invalid AGENT_DEPTH: $AGENT_DEPTH" >&2
   exit 2
 fi
 
 if ! [[ "$AGENT_MAX_DEPTH" =~ ^[0-9]+$ ]]; then
-  echo "Invalid AGENT_MAX_DEPTH: $AGENT_MAX_DEPTH" >&2
+  log "Invalid AGENT_MAX_DEPTH: $AGENT_MAX_DEPTH" >&2
   exit 2
 fi
 
 if ! [[ "$AGENT_MAX_SECONDS" =~ ^[0-9]+$ ]]; then
-  echo "Invalid AGENT_MAX_SECONDS: $AGENT_MAX_SECONDS" >&2
+  log "Invalid AGENT_MAX_SECONDS: $AGENT_MAX_SECONDS" >&2
   exit 2
 fi
 
 if (( AGENT_DEPTH >= AGENT_MAX_DEPTH )); then
-  echo "Refusing to spawn agent: max depth reached." >&2
-  echo "AGENT_DEPTH=$AGENT_DEPTH AGENT_MAX_DEPTH=$AGENT_MAX_DEPTH" >&2
+  log "Refusing to spawn agent: max depth reached." >&2
+  log "AGENT_DEPTH=$AGENT_DEPTH AGENT_MAX_DEPTH=$AGENT_MAX_DEPTH" >&2
   exit 3
 fi
 
 SAFE_ROLE="$(echo "$ROLE" | tr -cd '[:alnum:]_-')"
 
 if [[ "$SAFE_ROLE" != "$ROLE" || -z "$SAFE_ROLE" ]]; then
-  echo "Invalid role name: $ROLE" >&2
-  echo "Allowed characters: letters, numbers, underscore, dash" >&2
+  log "Invalid role name: $ROLE" >&2
+  log "Allowed characters: letters, numbers, underscore, dash" >&2
   exit 4
 fi
 
 ROLE_FILE="$AGENT_HIVE_HOME/agents/$ROLE.md"
 
 if [[ ! -f "$ROLE_FILE" ]]; then
-  echo "Unknown agent role: $ROLE" >&2
-  echo "Expected role file: $ROLE_FILE" >&2
+  log "Unknown agent role: $ROLE" >&2
+  log "Expected role file: $ROLE_FILE" >&2
   exit 4
 fi
 
 if [[ ! -x "$ENV_WRAPPER" ]]; then
-  echo "Missing or non-executable env wrapper: $ENV_WRAPPER" >&2
-  echo "Expected something like: $AGENT_HIVE_HOME/bin/with_deepseek_env" >&2
+  log "Missing or non-executable env wrapper: $ENV_WRAPPER" >&2
+  log "Expected something like: $AGENT_HIVE_HOME/bin/with_deepseek_env" >&2
   exit 5
 fi
 
 if ! command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
-  echo "Cannot find Claude-compatible CLI command: $CLAUDE_CMD" >&2
-  echo "Set CLAUDE_CMD=/path/to/your/cli if needed." >&2
+  log "Cannot find Claude-compatible CLI command: $CLAUDE_CMD" >&2
+  log "Set CLAUDE_CMD=/path/to/your/cli if needed." >&2
   exit 6
 fi
+
+for cmd in setsid timeout date mkdir chmod sed tail cat cp grep hostname tr; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    log "Missing required command: $cmd" >&2
+    exit 7
+  fi
+done
 
 mkdir -p \
   "$AGENT_HIVE_HOME/tasks" \
@@ -187,41 +196,41 @@ If your role instructions do not specify an output format, use:
 ## Result
 EOF
 
-echo "Spawning agent:"
-echo "  task_id:   $TASK_ID"
-echo "  role:      $ROLE"
-echo "  parent:    $AGENT_PARENT_TASK"
-echo "  depth:     $AGENT_DEPTH -> $((AGENT_DEPTH + 1))"
-echo "  wrapper:   $ENV_WRAPPER"
-echo "  command:   $CLAUDE_CMD --print < prompt.md"
-echo "  workspace: $WORKSPACE_DIR"
-echo "  prompt:    $PROMPT_FILE"
-echo "  result:    $RESULT_FILE"
-echo
+log "Spawning agent:"
+log "  task_id:   $TASK_ID"
+log "  role:      $ROLE"
+log "  parent:    $AGENT_PARENT_TASK"
+log "  depth:     $AGENT_DEPTH -> $((AGENT_DEPTH + 1))"
+log "  wrapper:   $ENV_WRAPPER"
+log "  command:   $CLAUDE_CMD --print < prompt.md"
+log "  workspace: $WORKSPACE_DIR"
+log "  prompt:    $PROMPT_FILE"
+log "  result:    $RESULT_FILE"
+log
 
 export AGENT_HIVE_HOME
 export AGENT_PARENT_TASK="$TASK_ID"
 export AGENT_DEPTH="$((AGENT_DEPTH + 1))"
 
-echo "Agent running..."
-echo "  live stdout: $STDOUT_FILE"
-echo "  live stderr: $STDERR_FILE"
-echo
+log "Agent running..."
+log "  live stdout: $STDOUT_FILE"
+log "  live stderr: $STDERR_FILE"
+log
 
 HEARTBEAT_SECONDS="${AGENT_HEARTBEAT_SECONDS:-15}"
 
 if ! [[ "$HEARTBEAT_SECONDS" =~ ^[0-9]+$ ]]; then
-  echo "Invalid AGENT_HEARTBEAT_SECONDS: $HEARTBEAT_SECONDS" >&2
+  log "Invalid AGENT_HEARTBEAT_SECONDS: $HEARTBEAT_SECONDS" >&2
   exit 2
 fi
 
 if (( HEARTBEAT_SECONDS < 1 )); then
-  echo "AGENT_HEARTBEAT_SECONDS must be >= 1" >&2
+  log "AGENT_HEARTBEAT_SECONDS must be >= 1" >&2
   exit 2
 fi
 
 if (( HEARTBEAT_SECONDS > AGENT_MAX_SECONDS )); then
-  echo "Warning: AGENT_HEARTBEAT_SECONDS is greater than AGENT_MAX_SECONDS; heartbeat may not print before timeout." >&2
+  log "Warning: AGENT_HEARTBEAT_SECONDS is greater than AGENT_MAX_SECONDS; heartbeat may not print before timeout." >&2
 fi
 
 set +e
@@ -247,13 +256,15 @@ cleanup_child() {
   fi
 
   if [[ "${CHILD_RUNNING:-0}" -eq 1 && -n "${CLAUDE_PID:-}" ]]; then
-    echo
-    echo "Stopping child agent process group..."
+    log
+    log "Stopping child agent process group..."
     # setsid creates a new session where the timeout process is the process-group leader.
     # Killing -$CLAUDE_PID signals the whole agent process group (timeout + claude).
-    kill -s TERM -- "-$CLAUDE_PID" 2>/dev/null || true
-    sleep 2
-    kill -s KILL -- "-$CLAUDE_PID" 2>/dev/null || true
+    if [[ -n "${CLAUDE_PID:-}" && "$CLAUDE_PID" =~ ^[0-9]+$ && "$CLAUDE_PID" -gt 1 ]]; then
+      kill -s TERM -- "-$CLAUDE_PID" 2>/dev/null || true
+      sleep 2
+      kill -s KILL -- "-$CLAUDE_PID" 2>/dev/null || true
+    fi
 
     wait "$CLAUDE_PID" 2>/dev/null || true
     CHILD_RUNNING=0
@@ -282,11 +293,11 @@ heartbeat_loop() {
     sleep "$HEARTBEAT_SECONDS"
     elapsed=$((elapsed + HEARTBEAT_SECONDS))
 
-    echo "Agent still running... ${elapsed}s elapsed"
+    log "Agent still running... ${elapsed}s elapsed"
 
     if [[ -s "$STDERR_FILE" ]]; then
-      echo "  stderr has output; last lines:"
-      tail -n 3 "$STDERR_FILE" | sed 's/^/    /'
+      log "  stderr has output; last lines:"
+      tail -n 3 "$STDERR_FILE" | sed 's/^/    /' >&2
     fi
   done
 }
@@ -311,10 +322,10 @@ set -e
 if [[ "$STATUS" -eq 0 ]]; then
   cp "$STDOUT_FILE" "$RESULT_FILE"
 
-  echo "Agent completed:"
-  echo "  task_id: $TASK_ID"
-  echo "  result:  $RESULT_FILE"
-  echo
+  log "Agent completed:"
+  log "  task_id: $TASK_ID"
+  log "  result:  $RESULT_FILE"
+  log
 
   cat "$RESULT_FILE"
   exit 0
@@ -340,11 +351,11 @@ fi
   cat "$STDERR_FILE" || true
 } > "$RESULT_FILE"
 
-echo "Agent failed or timed out." >&2
-echo "  task_id: $TASK_ID" >&2
-echo "  role:    $ROLE" >&2
-echo "  status:  $STATUS" >&2
-echo "  result:  $RESULT_FILE" >&2
-echo "  stderr:  $STDERR_FILE" >&2
+log "Agent failed or timed out." >&2
+log "  task_id: $TASK_ID" >&2
+log "  role:    $ROLE" >&2
+log "  status:  $STATUS" >&2
+log "  result:  $RESULT_FILE" >&2
+log "  stderr:  $STDERR_FILE" >&2
 
 exit "$STATUS"
