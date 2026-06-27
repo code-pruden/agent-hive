@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENT_HIVE_HOME="${AGENT_HIVE_HOME:-$HOME/agent-hive}"
+
+TASK_ID="${1:-}"
+
+if [[ -z "$TASK_ID" ]]; then
+  echo "Usage: $0 <task_id>" >&2
+  echo "  e.g. $0 20260627T200059Z-reviewer-149721" >&2
+  exit 2
+fi
+
+# Refuse unsafe characters: allow only alphanumeric, dash, underscore.
+if [[ "$TASK_ID" =~ [/.] ]] || [[ "$TASK_ID" =~ [^a-zA-Z0-9_-] ]]; then
+  echo "Error: task_id contains invalid characters." >&2
+  echo "  Allowed: letters, numbers, dash, underscore." >&2
+  echo "  Forbidden: slash, dot, whitespace, shell metacharacters." >&2
+  exit 1
+fi
+
+RESULT_FILE="$AGENT_HIVE_HOME/tasks/$TASK_ID/result.md"
+
+if [[ ! -f "$RESULT_FILE" ]]; then
+  echo "Error: no result found for task $TASK_ID" >&2
+  echo "  Expected: $RESULT_FILE" >&2
+  exit 1
+fi
+
+cat "$RESULT_FILE"

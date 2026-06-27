@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENT_HIVE_HOME="${AGENT_HIVE_HOME:-$HOME/agent-hive}"
+COUNT="${1:-20}"
+
+if ! [[ "$COUNT" =~ ^[0-9]+$ ]]; then
+  echo "Usage: $0 [count]" >&2
+  echo "  count must be a positive integer (default 20)" >&2
+  exit 2
+fi
+
+TASKS_DIR="$AGENT_HIVE_HOME/tasks"
+
+if [[ ! -d "$TASKS_DIR" ]] || [[ -z "$(ls -A "$TASKS_DIR" 2>/dev/null)" ]]; then
+  echo "No tasks found in $TASKS_DIR"
+  exit 0
+fi
+
+# List task directories sorted by name (newest first, since task IDs are
+# timestamp-prefixed). Print the most recent $COUNT entries.
+task_dirs=$(find "$TASKS_DIR" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort -r | head -n "$COUNT")
+
+if [[ -z "$task_dirs" ]]; then
+  echo "No tasks found in $TASKS_DIR"
+  exit 0
+fi
+
+while IFS= read -r task_id; do
+  result_file="$TASKS_DIR/$task_id/result.md"
+  meta_file="$TASKS_DIR/$task_id/meta.env"
+
+  role=""
+  if [[ -f "$meta_file" ]]; then
+    role=$(grep -oP '^ROLE=\K.*' "$meta_file" 2>/dev/null || true)
+  fi
+
+  if [[ -f "$result_file" ]]; then
+    verdict=""
+    verdict=$(grep -m1 -E '^\*\*(IMPLEMENTED|PARTIAL|PROPOSED ONLY|BLOCKED|APPROVE|APPROVE WITH CHANGES|DO NOT APPROVE|READY_TO_COMMIT|NEEDS_REVIEW|NO_CHANGES)\*\*' "$result_file" 2>/dev/null || true)
+    verdict="${verdict#\*\*}"
+    verdict="${verdict%\*\*}"
+
+    if [[ -n "$role" ]]; then
+      echo "$task_id  [$role]  [result]  $verdict"
+    else
+      echo "$task_id  [result]  $verdict"
+    fi
+  else
+    if [[ -n "$role" ]]; then
+      echo "$task_id  [$role]  [no result]"
+    else
+      echo "$task_id  [no result]"
+    fi
+  fi
+done <<< "$task_dirs"
