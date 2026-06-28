@@ -7,3 +7,6 @@ workspaces/
 .claude/
 
 revisions/
+
+__pycache__/
+*.pyc
