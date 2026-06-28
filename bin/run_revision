@@ -121,7 +121,9 @@ CODER_TASK="Workspace is $WORKSPACE_DIR. Write all outputs there. Task: $TASK"
 coder_out="$LOGS_DIR/coder.stdout.log"
 coder_err="$LOGS_DIR/coder.stderr.log"
 
+echo "Agent coder started: implement task" >&2
 read -r CODER_STATUS CODER_TASK_ID < <(run_phase coder "$CODER_TASK" "$coder_out" "$coder_err")
+echo "Agent coder finished: implement task exit=$CODER_STATUS task_id=$CODER_TASK_ID" >&2
 
 if [[ -z "$CODER_TASK_ID" ]]; then
   echo "Error: failed to extract coder task_id" >&2
@@ -206,20 +208,14 @@ fi
 # Phase 2: Reviewer
 # ---------------------------------------------------------------------------
 
-REVIEWER_TASK="Review the coder output for the task: \`$TASK\`. "
-REVIEWER_TASK+="Coder task_id: $CODER_TASK_ID. "
-if [[ -f "$CODER_RESULT" ]]; then
-  REVIEWER_TASK+="Coder result: $(sed -n '1,40p' "$CODER_RESULT" | tr '\n' ' ' | tr -s '[:space:]' ' '). "
-else
-  REVIEWER_TASK+="Coder result file not found at $CODER_RESULT. "
-fi
-REVIEWER_TASK+="Coder workspace: $WORKSPACE_DIR. "
-REVIEWER_TASK+="Focus on correctness, completeness, and safety. Do not modify files."
+REVIEWER_TASK="Review the coder output. Revision: $REV_DIR. Task: $TASK. Coder task_id: $CODER_TASK_ID. Coder result: $CODER_RESULT. Coder stdout: $coder_out. Coder stderr: $coder_err. Workspace: $WORKSPACE_DIR. Inspect these files and paths as needed. Focus on correctness, completeness, and safety. Do not modify files."
 
 reviewer_out="$LOGS_DIR/reviewer.stdout.log"
 reviewer_err="$LOGS_DIR/reviewer.stderr.log"
 
+echo "Agent reviewer started: review implementation" >&2
 read -r REVIEWER_STATUS REVIEWER_TASK_ID < <(run_phase reviewer "$REVIEWER_TASK" "$reviewer_out" "$reviewer_err")
+echo "Agent reviewer finished: review implementation exit=$REVIEWER_STATUS task_id=$REVIEWER_TASK_ID" >&2
 
 if [[ -z "$REVIEWER_TASK_ID" ]]; then
   echo "Error: failed to extract reviewer task_id" >&2
