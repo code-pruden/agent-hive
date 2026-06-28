@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# run_revision v0.1
+#
+# Deterministic bash controller around spawn_agent.
+# Runs coder, then reviewer, inside an isolated revision directory.
+# Does NOT commit, push, or modify anything outside the revision tree.
+#
+# Usage:
+#   run_revision "Add a foo endpoint"
+#   echo "Fix the bar bug" | run_revision
+
+AGENT_HIVE_HOME="${AGENT_HIVE_HOME:-$HOME/agent-hive}"
+SPAWN_AGENT="$AGENT_HIVE_HOME/bin/spawn_agent"
+
+# ---------------------------------------------------------------------------
+# Pre-flight
+# ---------------------------------------------------------------------------
+
+if [[ ! -x "$SPAWN_AGENT" ]]; then
+  echo "Error: spawn_agent not found or not executable: $SPAWN_AGENT" >&2
+  exit 5
+fi
+
+for cmd in date mkdir grep sed tr head cut cat cp; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Error: missing required command: $cmd" >&2
+    exit 5
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Task input: arguments or stdin
+# ---------------------------------------------------------------------------
+
+TASK=""
+if [[ $# -gt 0 ]]; then
+  TASK="$*"
+elif [[ ! -t 0 ]]; then
+  TASK="$(cat)"
+fi
+
+# Collapse whitespace.
+TASK="$(echo "$TASK" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')"
+
+if [[ -z "$TASK" ]]; then
+  echo "Usage: $0 <task description>" >&2
+  echo "       echo 'task' | $0" >&2
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# Slug: filesystem-safe short label derived from the task
+# ---------------------------------------------------------------------------
+
+slug() {
+  local raw="$1"
+  raw="$(echo "$raw" | tr '[:upper:]' '[:lower:]')"
+  raw="$(echo "$raw" | tr -cd '[:alnum:] ._-' | tr ' ._' '-' | tr -s '-' | sed 's/^-//;s/-$//')"
+  raw="${raw:0:64}"
+  if [[ -z "$raw" ]]; then
+    raw="task"
+  fi
+  echo "$raw"
+}
+
+SLUG="$(slug "$TASK")"
+TIMESTAMP="$(date -u +"%Y%m%dT%H%M%SZ")"
+REV_DIR="$AGENT_HIVE_HOME/revisions/${TIMESTAMP}-${SLUG}"
+
+WORKSPACE_DIR="$REV_DIR/workspace"
+LOGS_DIR="$REV_DIR/logs"
+RESULTS_DIR="$REV_DIR/results"
+
+mkdir -p "$WORKSPACE_DIR" "$LOGS_DIR" "$RESULTS_DIR"
+
+# ---------------------------------------------------------------------------
+# Helper: run a spawn_agent phase, capture stdout/stderr to log files,
+#         extract task_id from stderr.
+# ---------------------------------------------------------------------------
+
+run_phase() {
+  local role="$1"
+  local task="$2"
+  local stdout_log="$3"
+  local stderr_log="$4"
+
+  set +e
+  "$SPAWN_AGENT" "$role" "$task" \
+    >"$stdout_log" \
+    2>"$stderr_log"
+  local status=$?
+  set -e
+
+  # Extract task_id from stderr (spawn_agent prints: "  task_id:   <id>").
+  local tid
+  tid="$(grep -m1 'task_id:' "$stderr_log" 2>/dev/null \
+         | sed 's/.*task_id: *//' \
+         | tr -d '[:space:]' || true)"
+
+  echo "$status $tid"
+}
+
+# ---------------------------------------------------------------------------
+# Phase 1: Coder
+# ---------------------------------------------------------------------------
+
+CODER_TASK="Workspace is $WORKSPACE_DIR. Write all outputs there. Task: $TASK"
+
+coder_out="$LOGS_DIR/coder.stdout.log"
+coder_err="$LOGS_DIR/coder.stderr.log"
+
+read -r CODER_STATUS CODER_TASK_ID < <(run_phase coder "$CODER_TASK" "$coder_out" "$coder_err")
+
+if [[ -z "$CODER_TASK_ID" ]]; then
+  echo "Error: failed to extract coder task_id" >&2
+  CODER_TASK_ID="unknown"
+fi
+
+# ---------------------------------------------------------------------------
+# Phase 2: Reviewer
+# ---------------------------------------------------------------------------
+
+CODER_RESULT="$AGENT_HIVE_HOME/tasks/$CODER_TASK_ID/result.md"
+
+REVIEWER_TASK="Review the coder output for the task: \`$TASK\`. "
+REVIEWER_TASK+="Coder task_id: $CODER_TASK_ID. "
+if [[ -f "$CODER_RESULT" ]]; then
+  REVIEWER_TASK+="Coder result: $(head -c 512 "$CODER_RESULT" | tr '\n' ' ' | tr -s '[:space:]' ' '). "
+else
+  REVIEWER_TASK+="Coder result file not found at $CODER_RESULT. "
+fi
+REVIEWER_TASK+="Coder workspace: $WORKSPACE_DIR. "
+REVIEWER_TASK+="Focus on correctness, completeness, and safety. Do not modify files."
+
+reviewer_out="$LOGS_DIR/reviewer.stdout.log"
+reviewer_err="$LOGS_DIR/reviewer.stderr.log"
+
+read -r REVIEWER_STATUS REVIEWER_TASK_ID < <(run_phase reviewer "$REVIEWER_TASK" "$reviewer_out" "$reviewer_err")
+
+if [[ -z "$REVIEWER_TASK_ID" ]]; then
+  echo "Error: failed to extract reviewer task_id" >&2
+  REVIEWER_TASK_ID="unknown"
+fi
+
+# ---------------------------------------------------------------------------
+# Phase 3: Summary
+# ---------------------------------------------------------------------------
+
+SUMMARY="$RESULTS_DIR/summary.md"
+
+cat > "$SUMMARY" <<EOF
+# Revision Summary
+
+- **Revision**: ${TIMESTAMP}-${SLUG}
+- **Task**: $TASK
+- **Started**: $TIMESTAMP
+
+## Phases
+
+| Phase | Role | Task ID | Exit |
+|-------|------|---------|------|
+| 1     | coder | $CODER_TASK_ID | $CODER_STATUS |
+| 2     | reviewer | $REVIEWER_TASK_ID | $REVIEWER_STATUS |
+
+## Coder Output
+
+$(if [[ -f "$CODER_RESULT" ]]; then
+  head -c 2048 "$CODER_RESULT"
+else
+  echo "(result file not found)"
+fi)
+
+## Reviewer Output
+
+$(REVIEWER_RESULT="$AGENT_HIVE_HOME/tasks/$REVIEWER_TASK_ID/result.md"
+if [[ -f "$REVIEWER_RESULT" ]]; then
+  head -c 2048 "$REVIEWER_RESULT"
+else
+  echo "(result file not found)"
+fi)
+
+## Files
+
+- Workspace: \`$WORKSPACE_DIR\`
+- Coder stdout: \`$coder_out\`
+- Coder stderr: \`$coder_err\`
+- Reviewer stdout: \`$reviewer_out\`
+- Reviewer stderr: \`$reviewer_err\`
+EOF
+
+# ---------------------------------------------------------------------------
+# Exit
+# ---------------------------------------------------------------------------
+
+echo "$REV_DIR"
+
+if [[ "$CODER_STATUS" -ne 0 ]]; then
+  exit 3
+fi
+
+if [[ "$REVIEWER_STATUS" -ne 0 ]]; then
+  exit 4
+fi
+
+exit 0
