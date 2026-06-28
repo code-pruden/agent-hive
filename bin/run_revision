@@ -10,6 +10,16 @@ set -euo pipefail
 # Usage:
 #   run_revision "Add a foo endpoint"
 #   echo "Fix the bar bug" | run_revision
+#
+# Exit codes:
+#   0 - Success
+#   1 - (reserved)
+#   2 - Usage error (no task provided)
+#   3 - Coder phase failed (non-zero exit)
+#   4 - Reviewer phase failed (non-zero exit)
+#   5 - Pre-flight error (missing binary or command)
+#   6 - NEEDS_APPLICATION: coder succeeded but workspace is empty
+#       (sandbox-blocked or proposal-only coder result)
 
 AGENT_HIVE_HOME="${AGENT_HIVE_HOME:-$HOME/agent-hive}"
 SPAWN_AGENT="$AGENT_HIVE_HOME/bin/spawn_agent"
@@ -23,7 +33,7 @@ if [[ ! -x "$SPAWN_AGENT" ]]; then
   exit 5
 fi
 
-for cmd in date mkdir grep sed tr head cut cat cp; do
+for cmd in date mkdir grep sed tr find cat cp; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Error: missing required command: $cmd" >&2
     exit 5
@@ -118,16 +128,88 @@ if [[ -z "$CODER_TASK_ID" ]]; then
   CODER_TASK_ID="unknown"
 fi
 
+# Resolve coder result path early (also used by Phase 2).
+CODER_RESULT="$AGENT_HIVE_HOME/tasks/$CODER_TASK_ID/result.md"
+
+# ---------------------------------------------------------------------------
+# Empty-workspace guard
+# ---------------------------------------------------------------------------
+# If the coder succeeded but produced no files in the workspace, the
+# result is almost certainly a sandbox-blocked / proposal-only coder.
+# Review has nothing to inspect, so exit with a distinct code so the
+# caller can decide whether to apply the proposal and re-run.
+if [[ "$CODER_STATUS" -eq 0 ]]; then
+  if [[ -z "$(find "$WORKSPACE_DIR" -type f 2>/dev/null)" ]]; then
+    cat > "$RESULTS_DIR/summary.md" <<HEREDOC
+# Revision Summary
+
+- **Status**: NEEDS_APPLICATION
+
+The coder phase completed successfully, but no files were created in the
+revision workspace. This likely means the coder produced a proposal-only
+result (sandbox-blocked or otherwise unable to write workspace files).
+
+The top agent or human must apply the proposed contents before the
+reviewer phase can proceed.
+
+## Next Steps
+
+1. Review the coder's proposal (see coder stdout / stderr logs).
+2. Apply the proposed changes to the workspace directory.
+3. Re-run \`run_revision\` with the same task to trigger the reviewer phase.
+
+## Coder Output
+
+$(if [[ -f "$CODER_RESULT" ]]; then
+  sed -n '1,80p' "$CODER_RESULT"
+else
+  echo "(result file not found)"
+fi)
+
+## Logs
+
+- Coder stdout: $coder_out
+- Coder stderr: $coder_err
+HEREDOC
+    echo "$REV_DIR"
+    exit 6
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Coder failure guard
+# ---------------------------------------------------------------------------
+# If the coder exited non-zero, write a failure summary and exit before
+# spawning the reviewer.  No recovery is attempted.
+if [[ "$CODER_STATUS" -ne 0 ]]; then
+  cat > "$RESULTS_DIR/summary.md" <<EOF
+# Revision Summary — Coder Failed
+
+- **Revision**: ${TIMESTAMP}-${SLUG}
+- **Task**: $TASK
+
+## Coder Failure
+
+- **Coder task_id**: $CODER_TASK_ID
+- **Exit status**: $CODER_STATUS
+- **Coder stdout**: \`$coder_out\`
+- **Coder stderr**: \`$coder_err\`
+- **Result file**: \`$CODER_RESULT\`
+
+The coder phase exited with a non-zero status. No reviewer was spawned.
+EOF
+  echo "$REV_DIR"
+  exit 3
+fi
+
 # ---------------------------------------------------------------------------
 # Phase 2: Reviewer
 # ---------------------------------------------------------------------------
 
-CODER_RESULT="$AGENT_HIVE_HOME/tasks/$CODER_TASK_ID/result.md"
-
 REVIEWER_TASK="Review the coder output for the task: \`$TASK\`. "
 REVIEWER_TASK+="Coder task_id: $CODER_TASK_ID. "
 if [[ -f "$CODER_RESULT" ]]; then
-  REVIEWER_TASK+="Coder result: $(head -c 512 "$CODER_RESULT" | tr '\n' ' ' | tr -s '[:space:]' ' '). "
+  REVIEWER_TASK+="Coder result: $(sed -n '1,40p' "$CODER_RESULT" | tr '\n' ' ' | tr -s '[:space:]' ' '). "
 else
   REVIEWER_TASK+="Coder result file not found at $CODER_RESULT. "
 fi
@@ -167,7 +249,7 @@ cat > "$SUMMARY" <<EOF
 ## Coder Output
 
 $(if [[ -f "$CODER_RESULT" ]]; then
-  head -c 2048 "$CODER_RESULT"
+  sed -n '1,80p' "$CODER_RESULT"
 else
   echo "(result file not found)"
 fi)
@@ -176,7 +258,7 @@ fi)
 
 $(REVIEWER_RESULT="$AGENT_HIVE_HOME/tasks/$REVIEWER_TASK_ID/result.md"
 if [[ -f "$REVIEWER_RESULT" ]]; then
-  head -c 2048 "$REVIEWER_RESULT"
+  sed -n '1,80p' "$REVIEWER_RESULT"
 else
   echo "(result file not found)"
 fi)
@@ -195,10 +277,6 @@ EOF
 # ---------------------------------------------------------------------------
 
 echo "$REV_DIR"
-
-if [[ "$CODER_STATUS" -ne 0 ]]; then
-  exit 3
-fi
 
 if [[ "$REVIEWER_STATUS" -ne 0 ]]; then
   exit 4
