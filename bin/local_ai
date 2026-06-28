@@ -104,7 +104,7 @@ classify_task() {
     route="summarizer"
     confidence="0.92"
     reason="Task asks to summarize or compress existing text."
-  elif [[ "$task_lc" =~ edit|modify|patch|implement|write[[:space:]]+code|change[[:space:]]+file|add[[:space:]]+comment|fix ]]; then
+  elif [[ "$task_lc" =~ create|build|make|generate|scaffold|add|edit|modify|patch|implement|write[[:space:]]+code|write|change[[:space:]]+file|fix ]]; then
     route="coder"
     confidence="0.90"
     reason="Task asks to edit, implement, patch, or change files."

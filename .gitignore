@@ -3,7 +3,7 @@ tasks/
 workspaces/
 *.log
 .env
-
 .claude/
-
 revisions/
+__pycache__/
+*.pyc
